@@ -1,0 +1,81 @@
+#!/usr/bin/env python
+
+import sys
+
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+logger.addHandler(logging.StreamHandler())
+
+import ledger
+import uuid
+
+from gnucash import Session, Transaction, Split, Account, GncNumeric
+from gnucash.gnucash_core_c import ACCT_TYPE_ASSET, ACCT_TYPE_EQUITY,\
+	ACCT_TYPE_EXPENSE, ACCT_TYPE_INCOME, ACCT_TYPE_LIABILITY, \
+	ACCT_TYPE_CREDIT, ACCT_TYPE_BANK
+
+session = Session(sys.argv[2],is_new=True)
+book=session.get_book()
+root=book.get_root_account()
+commodity_table = book.get_table()
+commodity=commodity_table.lookup("ISO4217", "USD")
+
+journal=ledger.read_journal(sys.argv[1])
+for xact in journal.xacts(): #xact is a ledger.Transaction
+	transaction=Transaction(book)
+	transaction.BeginEdit()
+	#print(xact.date.timetuple()[0:3])
+	transaction.SetDate(*(xact.date.timetuple()[2::-1]))
+	transaction.SetDescription(xact.payee)
+	transaction.SetCurrency(commodity)
+	for post in xact.posts():
+		accountFullName=post.account.fullname()
+		accountHierarchy=accountFullName.split(":")
+		cursor=root
+		for accountName in accountHierarchy:
+			account=cursor.lookup_by_name(accountName)
+			if(not account):
+				account=Account(book)
+				account.SetName(accountName)
+				account.SetCommodity(commodity)
+				if(accountName.startswith("Expense")):
+					account.SetType(ACCT_TYPE_EXPENSE)
+				elif(accountName.startswith("Income")):
+					account.SetType(ACCT_TYPE_INCOME)
+				elif(accountName.startswith("Asset")):
+					account.SetType(ACCT_TYPE_ASSET)
+				elif(accountName.startswith("Liabilit")):
+					account.SetType(ACCT_TYPE_LIABILITY)
+				elif(accountName.startswith("Equity")):
+					account.SetType(ACCT_TYPE_EQUITY)
+				else:
+					account.SetType(cursor.GetType())
+
+				cursor.append_child(account)
+			cursor=account
+		#cursor is current account
+		split=Split(book)
+		split.SetAccount(cursor)
+		split.SetParent(transaction)
+		split.SetValue(GncNumeric(100*post.amount.number(),100))
+		if(post.has_tag("tax")):
+			account.SetTaxRelated(True)
+			if(post.tag("tax")):
+				account.SetTaxUSCode(str(post.tag("tax")))
+		
+	transaction.CommitEdit()
+session.save()
+session.end()
+session.destroy()
+
+sys.exit(0)
+journal=ledger.read_journal(sys.argv[1])
+
+for xact in journal.xacts(): #xact is a ledger.Transaction
+	print "D%s"%(str(xact.date.strftime("%m/%d/%Y")))
+	print "T$0"
+	print "P%s"%(xact.payee)
+	if(xact.code): print "N%s"%(xact.code)
+	for post in xact.posts():
+		accountName=post.account.fullname().replace("/","_-_")
